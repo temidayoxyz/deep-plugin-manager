@@ -1,0 +1,68 @@
+{
+  "name": "dsh-deep-plugin-manager",
+  "version": "0.1.0",
+  "description": "Deep Plugin Manager — install, enable, disable, update, and uninstall GitHub-hosted DeepSeek Harness plugins from the Settings UI",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "plugin-manager",
+    "github"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/temidayoxyz/deep-plugin-manager.git"
+  },
+  "bugs": {
+    "url": "https://github.com/temidayoxyz/deep-plugin-manager/issues"
+  },
+  "homepage": "https://github.com/temidayoxyz/deep-plugin-manager#readme",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepare": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types \"tests/*.spec.ts\""
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "@types/react": "^18.3.1",
+    "tsdown": "^0.16.8",
+    "typescript": "^5.8.0"
+  }
+}

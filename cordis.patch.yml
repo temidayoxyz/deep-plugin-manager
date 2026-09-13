@@ -1,0 +1,7 @@
+# Deep Plugin Manager bundle layer: mounts the package on the Loader. The
+# browser half (lib/client) is discovered and served by the client-modules
+# scan from the package's dsh.client declaration; the Host half registers the
+# management HTTP routes on the Harness web server.
+- insert:
+    - id: deep-plugin-manager
+      name: dsh-deep-plugin-manager
