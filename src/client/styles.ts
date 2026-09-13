@@ -98,13 +98,14 @@ export const SECTION_STYLES = `
 .dpm-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px 12px;
   padding: 12px 14px;
   background: var(--dsw-alias-bg-layer-1);
 }
 .dpm-row + .dpm-row { border-top: 1px solid var(--dsw-alias-border-l1); }
 .dpm-main {
-  flex: 1 1 auto;
+  flex: 1 1 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
