@@ -91,9 +91,7 @@ export const SECTION_STYLES = `
 .dpm-list {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 10px;
-  overflow: hidden;
+  gap: 10px;
 }
 .dpm-row {
   display: flex;
@@ -101,9 +99,10 @@ export const SECTION_STYLES = `
   flex-wrap: wrap;
   gap: 10px 12px;
   padding: 12px 14px;
-  background: var(--dsw-alias-bg-layer-1);
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 10px;
 }
-.dpm-row + .dpm-row { border-top: 1px solid var(--dsw-alias-border-l1); }
 .dpm-main {
   flex: 1 1 100%;
   min-width: 0;
@@ -151,9 +150,47 @@ export const SECTION_STYLES = `
   border: 1px solid var(--dsw-alias-border-l2);
   color: var(--dsw-alias-label-secondary);
   background: transparent;
+}
+.dpm-switch {
+  flex: none;
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-3);
   cursor: pointer;
-  font: inherit;
-  font-size: 12px;
+  padding: 0;
+  transition: background var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
+    border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
+}
+.dpm-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--dsw-alias-label-secondary);
+  transition: transform var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
+    background var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
+}
+.dpm-switch[aria-checked='true'] {
+  background: var(--dsw-alias-state-success-primary);
+  border-color: transparent;
+}
+.dpm-switch[aria-checked='true']::after {
+  transform: translateX(16px);
+  background: var(--dsw-alias-label-primary-foreground);
+}
+.dpm-switch:focus-visible {
+  outline: 2px solid var(--dsw-alias-button-ghost-active-border);
+  outline-offset: 1px;
+}
+.dpm-switch:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .dpm-state.on {
   color: var(--dsw-alias-state-success-primary);

@@ -240,13 +240,13 @@ function PluginRow({
         : (
             <button
               type='button'
-              className={`dpm-state ${entry.enabled ? 'on' : ''}`}
+              role='switch'
+              aria-checked={entry.enabled}
+              className='dpm-switch'
               onClick={onToggle}
               disabled={busy !== null}
-              aria-pressed={entry.enabled}
-            >
-              {entry.enabled ? t('enabled.on') : t('enabled.off')}
-            </button>
+              aria-label={`${entry.name} — ${entry.enabled ? t('enabled.on') : t('enabled.off')}`}
+            />
           )}
       <div className='dpm-actions'>
         <button
