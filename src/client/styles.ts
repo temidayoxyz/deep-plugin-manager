@@ -103,7 +103,13 @@ export const SECTION_STYLES = `
   background: var(--dsw-alias-bg-layer-1);
 }
 .dpm-row + .dpm-row { border-top: 1px solid var(--dsw-alias-border-l1); }
-.dpm-row.main { flex: 1 1 auto; min-width: 0; }
+.dpm-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .dpm-name {
   font-size: 14px;
   font-weight: 600;
@@ -112,6 +118,11 @@ export const SECTION_STYLES = `
 .dpm-version {
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary);
+  margin-left: 6px;
+}
+.dpm-pkg {
+  font-size: 11px;
+  color: var(--dsw-alias-label-caption);
   margin-left: 6px;
 }
 .dpm-spec {
@@ -126,6 +137,10 @@ export const SECTION_STYLES = `
   line-height: 17px;
   color: var(--dsw-alias-label-secondary);
   margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .dpm-state {
   flex: none;

@@ -217,13 +217,18 @@ function PluginRow({
   const updateAvailable = update !== undefined && update !== 'none' && update !== 'error' && update.updateAvailable
   return (
     <div className='dpm-row'>
-      <div className='dpm-row main'>
+      <div className='dpm-main'>
         <div>
-          <span className='dpm-name'>{entry.name}</span>
+          <span className='dpm-name'>{entry.displayName ?? entry.name}</span>
           {entry.version !== '' && <span className='dpm-version'>{entry.version}</span>}
           {updateAvailable && <span className='dpm-badge'>{t('update.available', { tag: (update as UpdateCheck).latest?.tag ?? '' })}</span>}
         </div>
-        <div className='dpm-spec' title={entry.spec}>{t('managed.by', { spec: entry.spec })}</div>
+        <div className='dpm-spec' title={entry.spec}>
+          {t('managed.by', { spec: entry.spec })}
+          {entry.displayName !== undefined && entry.displayName !== entry.name && (
+            <span className='dpm-pkg'> · {entry.name}</span>
+          )}
+        </div>
         {entry.description !== undefined && <div className='dpm-desc'>{entry.description}</div>}
       </div>
       {entry.patchMounted

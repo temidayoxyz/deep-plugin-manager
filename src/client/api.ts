@@ -14,6 +14,8 @@ export interface PluginEntry {
   enabled: boolean
   /** Mounted through the profile's cordis.patch.yml; the toggle belongs there. */
   patchMounted?: boolean
+  /** Display name: the GitHub repository name when GitHub-sourced. */
+  displayName?: string
   description?: string
   repository?: string
   author?: string

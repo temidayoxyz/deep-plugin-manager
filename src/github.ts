@@ -226,6 +226,43 @@ export async function latestRelease(ref: RepoRef): Promise<ReleaseInfo | null> {
 }
 
 /**
+ * Fetch the repository's own metadata (the About description).
+ * @param ref - repository reference (the ref field is ignored here).
+ * @returns metadata, or `null` when the repository does not exist.
+ * @throws {GitHubError} on network failure, rate limit, or non-OK responses.
+ */
+export async function repoMetadata(ref: RepoRef): Promise<{ description?: string } | null> {
+  const url = ['https://api.github.com/repos', ref.owner, ref.repo].join('/')
+  assertAllowedUrl(url)
+  let response: Response
+  try {
+    response = await fetch(url, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        'user-agent': 'dsh-deep-plugin-manager',
+        ...authHeader(),
+      },
+    })
+  } catch (error) {
+    throw new GitHubError(`GitHub request failed: ${String(error)}`, String(error))
+  }
+  if (response.status === 404) return null
+  if (response.status === 403 || response.status === 429) {
+    throw new GitHubError(
+      'GitHub rate limit reached. Try again later, or set GITHUB_TOKEN to raise the limit.',
+    )
+  }
+  if (!response.ok) {
+    throw new GitHubError(`GitHub responded ${String(response.status)} for ${ref.owner}/${ref.repo}.`)
+  }
+  const body = await response.json().catch(() => null) as { description?: unknown } | null
+  if (body === null) throw new GitHubError('GitHub returned an unreadable repository payload.')
+  return typeof body.description === 'string' && body.description !== ''
+    ? { description: body.description }
+    : {}
+}
+
+/**
  * Compare a release tag against an installed version. Both are stripped of a
  * leading `v` and compared numerically per dot segment when they look like
  * versions; mismatched shapes fall back to inequality.

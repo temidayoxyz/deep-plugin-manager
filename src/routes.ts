@@ -8,8 +8,8 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { ManagerError } from './errors.ts'
-import type { PluginEntry, ProfileManifest } from './profile.ts'
-import type { InstallResult, PluginManagerOptions, UpdateCheck, UpdateResult } from './lifecycle.ts'
+import type { ManagedEntry, InstallResult, PluginManagerOptions, UpdateCheck, UpdateResult } from './lifecycle.ts'
+import type { ProfileManifest } from './profile.ts'
 import { createPluginManager } from './lifecycle.ts'
 
 /** The JSON body cap: install inputs are tiny; anything larger is refused. */
@@ -17,7 +17,7 @@ const MAX_BODY_BYTES = 64 * 1024
 
 /** The management API as the client UI consumes it. */
 export interface PluginManagerApi {
-  list(): PluginEntry[]
+  list(): Promise<ManagedEntry[]>
   install(input: string): Promise<InstallResult>
   enable(name: string): void
   disable(name: string): void
@@ -51,7 +51,7 @@ export async function handleRequest(
   const method = req.method ?? 'GET'
   try {
     if (path === '/deep-plugin-manager/plugins' && method === 'GET') {
-      sendJson(res, 200, { plugins: api.list() })
+      sendJson(res, 200, { plugins: await api.list() })
       return
     }
     if (path === '/deep-plugin-manager/install' && method === 'POST') {
@@ -138,4 +138,4 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
 }
 
 /** Profile-manifest re-export for route consumers typing the API surface. */
-export type { PluginEntry, ProfileManifest }
+export type { ManagedEntry, ProfileManifest }

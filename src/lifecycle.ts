@@ -27,19 +27,16 @@ import {
   NotInstalledError,
 } from './errors.ts'
 import {
-  latestRelease, isNewerVersion, parseRepoRef, repoFromSpec, specFor,
+  latestRelease, isNewerVersion, parseRepoRef, repoFromSpec, specFor, repoMetadata,
   type ReleaseInfo, type RepoRef,
 } from './github.ts'
 import {
   assertManageableName, listPlugins, readInstalledPackage, readManifest, writeManifest,
   type PluginEntry, type ProfileManifest,
 } from './profile.ts'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { runPnpm, type PnpmRunner } from './runner.ts'
-
-/** One listed plugin plus the patch-layer mount fact the UI renders. */
-export type ManagedEntry = PluginEntry & { patchMounted: boolean }
 
 /**
  * Whether an inserted module name mounts one package: equal to it, or a
@@ -140,13 +137,43 @@ export interface PluginManagerOptions {
   latestReleaseFn?: typeof latestRelease
 }
 
+/** One listed plugin plus the facts the UI renders from GitHub and the patch layer. */
+export interface ManagedEntry extends PluginEntry {
+  patchMounted: boolean
+  /** Display name: the GitHub repository name when GitHub-sourced. */
+  displayName?: string
+}
+
+/** Cached GitHub metadata for one installed plugin. */
+export interface MetaCacheEntry {
+  /** The source repository as owner/repo. */
+  repo?: string
+  /** The repository's About text, when it declares one. */
+  description?: string
+}
+
+/** Cached GitHub metadata keyed by package name (`.dsh-deep-plugin-manager.json`). */
+export type MetaCache = Record<string, MetaCacheEntry>
+
+/** Dependencies of the lifecycle engine; all injectable for tests. */
+export interface PluginManagerOptions {
+  /** The Harness profile directory this manager runs for. */
+  profileDir: string
+  /** The pnpm runner (injectable; tests substitute a fake). */
+  runner: PnpmRunner
+  /** Injected GitHub release lookup (tests substitute a fake). */
+  latestReleaseFn?: typeof latestRelease
+  /** Injected GitHub repository metadata lookup (tests substitute a fake). */
+  repoMetadataFn?: typeof repoMetadata
+}
+
 /**
  * Create the lifecycle manager bound to one profile directory.
- * @param options - profile directory, pnpm runner, optional GitHub override.
+ * @param options - profile directory, pnpm runner, optional GitHub overrides.
  * @returns the manager operations.
  */
 export function createPluginManager(options: PluginManagerOptions): {
-  list(): ManagedEntry[]
+  list(): Promise<ManagedEntry[]>
   install(input: string): Promise<InstallResult>
   enable(name: string): void
   disable(name: string): void
@@ -156,6 +183,7 @@ export function createPluginManager(options: PluginManagerOptions): {
 } {
   const { profileDir, runner } = options
   const releaseLookup = options.latestReleaseFn ?? latestRelease
+  const metadataLookup = options.repoMetadataFn ?? repoMetadata
 
   const dependencyNames = (manifest: ProfileManifest): string[] =>
     Object.keys(manifest.dependencies ?? {})
@@ -165,12 +193,69 @@ export function createPluginManager(options: PluginManagerOptions): {
     await runPnpm(runner, profileDir, ['remove', name], `remove ${name}`)
   }
 
+  const metaCachePath = join(profileDir, '.dsh-deep-plugin-manager.json')
+
+  /** Read the metadata cache; unreadable or missing state is an empty cache. */
+  const readMetaCache = (): MetaCache => {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(metaCachePath, 'utf8'))
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as MetaCache
+      }
+    } catch {
+      // Missing or corrupt cache: enrichment refetches and rewrites it.
+    }
+    return {}
+  }
+
+  /** Persist the metadata cache (plain write; it is disposable state). */
+  const writeMetaCache = (cache: MetaCache): void => {
+    const serialized = [JSON.stringify(cache, undefined, 2), ''].join('\n')
+    writeFileSync(metaCachePath, serialized)
+  }
+
+  /**
+   * Remember one plugin's source repository and GitHub About text. Failures
+   * are ignored: the cache is display enrichment, never lifecycle state.
+   */
+  const rememberMetadata = async (name: string, repo: RepoRef): Promise<void> => {
+    try {
+      const meta = await metadataLookup(repo)
+      const cache = readMetaCache()
+      const previous = cache[name] ?? {}
+      cache[name] = {
+        repo: [repo.owner, repo.repo].join('/'),
+        ...(meta?.description === undefined ? previous : { description: meta.description }),
+      }
+      writeMetaCache(cache)
+    } catch {
+      // Rate limits and network failures degrade to the manifest description.
+    }
+  }
+
   return {
-    list(): ManagedEntry[] {
-      return listPlugins(profileDir).map((entry) => ({
+    async list(): Promise<ManagedEntry[]> {
+      const entries: ManagedEntry[] = listPlugins(profileDir).map((entry) => ({
         ...entry,
         patchMounted: isPatchMounted(profileDir, entry.name),
       }))
+      const cache = readMetaCache()
+      await Promise.allSettled(entries.map(async (entry) => {
+        const repo = repoFromSpec(entry.spec)
+        if (repo === undefined) return
+        // The display name is the repository slug — no API call needed.
+        entry.displayName = repo.repo
+        const cached = cache[entry.name]
+        if (cached !== undefined) {
+          if (cached.description !== undefined) entry.description = cached.description
+          return
+        }
+        // First sighting: fetch the repository About text once and cache it.
+        await rememberMetadata(entry.name, repo)
+        const fresh = readMetaCache()[entry.name]
+        if (fresh?.description !== undefined) entry.description = fresh.description
+      }))
+      return entries
     },
 
     async install(input: string): Promise<InstallResult> {
@@ -223,6 +308,7 @@ export function createPluginManager(options: PluginManagerOptions): {
 
       enableInManifest(profileDir, name)
       const installed = readInstalledPackage(profileDir, name)
+      await rememberMetadata(name, ref)
       return {
         name,
         version: installed.version,
@@ -340,6 +426,7 @@ export function createPluginManager(options: PluginManagerOptions): {
         target = repo.ref !== undefined ? spec : specFor({ ...repo, ref: latest.tag })
         await runPnpm(runner, profileDir, ['add', target], `update ${name} to ${latest.tag}`)
       }
+      await rememberMetadata(name, repo)
       return { name, version: readInstalledPackage(profileDir, name).version || target, restartRequired: true }
     },
   }
