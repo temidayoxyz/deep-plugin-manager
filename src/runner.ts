@@ -9,6 +9,8 @@
  * @module dsh-deep-plugin-manager/runner
  */
 import { spawn } from 'node:child_process'
+import { existsSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { RunnerError } from './errors.ts'
 
 /** One completed pnpm invocation. */
@@ -35,13 +37,87 @@ const MAX_OUTPUT_BYTES = 64 * 1024
 const TIMEOUT_MS = 10 * 60 * 1000
 
 /**
- * Create the pnpm runner. The executable defaults to `pnpm` on PATH and may
- * be pointed elsewhere with `DSH_PNPM_EXECUTABLE` (used by tests and unusual
- * deployments).
+ * Find a pnpm whose store matches the one the profile was installed from.
+ *
+ * pnpm links `node_modules` from a store directory whose name carries its own
+ * major version (`store/v10`, `store/v11`). A pnpm of a different major
+ * refuses to touch that tree with ERR_PNPM_UNEXPECTED_STORE, which is what
+ * happens when the harness installed the profile with its bundled pnpm and the
+ * manager then runs whatever `pnpm` resolves to on PATH.
+ *
+ * The harness ships the pnpm it used, so that copy is preferred: it is by
+ * construction the one whose store the profile is linked from.
+ *
+ * @returns an executable path, or undefined when no bundled pnpm is present.
+ */
+function findBundledPnpm(): string | undefined {
+  const roots = [
+    process.env.LOCALAPPDATA === undefined ? undefined : join(process.env.LOCALAPPDATA, 'Programs', 'DeepSeek Harness', 'resources', 'runtime', 'pnpm', 'bin', 'pnpm.cjs'),
+    process.env.LOCALAPPDATA === undefined ? undefined : join(process.env.LOCALAPPDATA, 'Programs', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.cjs'),
+  ].filter((candidate): candidate is string => candidate !== undefined)
+  for (const candidate of roots) {
+    if (existsSync(candidate)) return candidate
+  }
+  // A differently-installed harness keeps the same layout under another name.
+  const programs = process.env.LOCALAPPDATA === undefined ? undefined : join(process.env.LOCALAPPDATA, 'Programs')
+  if (programs !== undefined && existsSync(programs)) {
+    for (const entry of readdirSync(programs, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.includes('DeepSeek')) continue
+      const candidate = join(programs, entry.name, 'resources', 'runtime', 'pnpm', 'bin', 'pnpm.cjs')
+      if (existsSync(candidate)) return candidate
+    }
+  }
+  return undefined
+}
+
+/**
+ * Resolve which pnpm to run.
+ *
+ * Precedence: an explicit configuration or environment override, then the
+ * harness's own bundled pnpm, then `pnpm` on PATH. The bundled copy matters
+ * because it is the one the profile was installed from, so a PATH pnpm of a
+ * different major would fail on the store rather than on anything about the
+ * requested operation.
+ *
+ * @param configured - the plugin's `pnpmCommand`, when set
+ * @returns the executable to spawn
+ */
+export function resolvePnpm(configured?: string): string {
+  const override = configured ?? process.env.DSH_PNPM_EXECUTABLE
+  if (override !== undefined && override.length > 0) return override
+  return findBundledPnpm() ?? 'pnpm'
+}
+
+/** A bundled pnpm is a `.cjs` entry, which `spawn` cannot execute directly. */
+function needsNode(executable: string): boolean {
+  return executable.endsWith('.cjs') || executable.endsWith('.js')
+}
+
+/**
+ * Whether pnpm refused the profile because its store belongs to another major.
+ *
+ * pnpm links `node_modules` from `store/v<major>`, and a different major refuses
+ * the tree rather than reinstalling it, so this is a configuration mismatch
+ * rather than anything about the requested operation.
+ */
+function isStoreMismatch(output: string): boolean {
+  return output.includes('ERR_PNPM_UNEXPECTED_STORE')
+}
+
+/** The bundled pnpm path, named in the error so the remedy is concrete. */
+function describeBundled(): string {
+  const bundled = findBundledPnpm()
+  return bundled === undefined ? '' : ` (${bundled})`
+}
+
+/**
+ * Create the pnpm runner. The executable is resolved by {@link resolvePnpm};
+ * tests pass one explicitly.
  * @param executable - pnpm executable override.
  * @returns the runner.
  */
-export function createPnpmRunner(executable: string = process.env.DSH_PNPM_EXECUTABLE ?? 'pnpm'): PnpmRunner {
+export function createPnpmRunner(executable?: string): PnpmRunner {
+  const resolved = resolvePnpm(executable)
   return async (profileDir: string, args: readonly string[]): Promise<PnpmResult> => {
     for (const argument of args) {
       if (!SAFE_ARG.test(argument)) {
@@ -51,12 +127,20 @@ export function createPnpmRunner(executable: string = process.env.DSH_PNPM_EXECU
     return new Promise<PnpmResult>((resolve, reject) => {
       // Windows resolves pnpm through its .cmd shim, which Node refuses to
       // spawn without a shell; the per-argument charset check above is what
-      // keeps the shell path safe on every platform.
-      const child = spawn(executable, [...args], {
-        cwd: profileDir,
-        shell: process.platform === 'win32',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
+      // keeps the shell path safe on every platform. A bundled pnpm is a `.cjs`
+      // entry rather than a command, so it runs under this process's Node
+      // instead of a shell, which also keeps it off PATH.
+      const viaNode = needsNode(resolved)
+      const child = viaNode
+        ? spawn(process.execPath, [resolved, ...args], {
+          cwd: profileDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        : spawn(resolved, [...args], {
+          cwd: profileDir,
+          shell: process.platform === 'win32',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
       let output = ''
       let failure: Error | undefined
       let settled = false
@@ -82,6 +166,18 @@ export function createPnpmRunner(executable: string = process.env.DSH_PNPM_EXECU
         clearTimeout(timer)
         if (failure !== undefined) {
           reject(failure)
+          return
+        }
+        if (code !== 0 && isStoreMismatch(output)) {
+          // pnpm's own text names the store directories but not the remedy, so
+          // the operation fails for a reason that looks like a dependency
+          // problem. Say what actually happened and which pnpm fixes it.
+          reject(new RunnerError(
+            `This profile was installed with a different pnpm major version, so its packages are linked from a ` +
+            `store this pnpm will not use. Run the operation again once \`pnpmCommand\` points at the pnpm the ` +
+            `Harness itself uses${describeBundled()}.`,
+            output,
+          ))
           return
         }
         resolve({ code: code ?? 1, output })

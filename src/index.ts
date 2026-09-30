@@ -19,14 +19,29 @@ export const inject = ['dshHomePath', 'webServer']
 /** The route prefix every management endpoint lives under. */
 export const ROUTE_PREFIX = '/deep-plugin-manager'
 
+/** Plugin configuration. */
+export interface Config {
+  /**
+   * pnpm executable name or path, resolved through `PATH` like the Harness
+   * `dsh plugin` command.
+   *
+   * Leave this unset to use the pnpm the Harness itself bundles, which is the
+   * one the profile was installed from. Naming a pnpm of a different major
+   * makes every operation fail: pnpm links a profile's packages from a store
+   * named for its own major version and refuses a tree from another.
+   */
+  pnpmCommand?: string
+}
+
 /**
  * Mount the plugin manager.
  * @param ctx - host context (home path and web server are injected).
+ * @param config - the pnpm executable to run package operations with.
  */
-export function apply(ctx: ClientContextLike): void {
+export function apply(ctx: ClientContextLike, config?: Config): void {
   ctx.inject(['dshHomePath', 'webServer'], (scope) => {
     const profileDir = resolveProfileDir(import.meta.url, scope.dshHomePath('profiles'))
-    const api = createApi({ profileDir, runner: createPnpmRunner() })
+    const api = createApi({ profileDir, runner: createPnpmRunner(config?.pnpmCommand) })
     scope.effect(
       () => scope.webServer.register({
         kind: 'prefix',

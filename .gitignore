@@ -1,5 +1,9 @@
 node_modules/
-lib/
 *.tsbuildinfo
 pnpm-lock.yaml
 pnpm-workspace.yaml
+
+# `lib/` is committed on purpose. This package is installed from a GitHub
+# address, and pnpm refuses to execute a git dependency's install scripts, so
+# the built entry point has to travel with the source. Regenerate with
+# `npm run build` and commit the result.

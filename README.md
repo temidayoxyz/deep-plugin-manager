@@ -78,6 +78,20 @@ https://github.com/temidayoxyz/deep-contrast/tree/v1.2.0
 
 Unpinned installs track the repository's default branch; `#tag` installs pin to that tag. Public repositories need no authentication — if `GITHUB_TOKEN` is present in the environment, the manager uses it for release checks and higher rate limits.
 
+### pnpm selection
+
+Every operation runs pnpm in the profile directory. pnpm links a profile's packages from a store directory named for its own major version (`store/v10`, `store/v11`) and refuses a tree linked from another, so the pnpm that runs here has to be the one that installed the profile.
+
+By default the manager uses the pnpm the Harness itself bundles, which is by construction that one. Override it only when a deployment installs with a different pnpm:
+
+```yaml
+- name: dsh-deep-plugin-manager
+  config:
+    pnpmCommand: /path/to/pnpm
+```
+
+`DSH_PNPM_EXECUTABLE` does the same thing through the environment, which is useful for a quick check without editing the profile. If the two disagree, pnpm fails with `ERR_PNPM_UNEXPECTED_STORE`; the manager recognises that specific failure and reports the mismatch as a configuration problem instead of passing pnpm's store-path text through as though it were a dependency error.
+
 ## Safety model
 
 - **No partial installs.** pnpm is transactional for `add`; if validation fails after a fetch (not a Harness plugin, reserved name), the package is removed and the manifest restored before the error surfaces.
