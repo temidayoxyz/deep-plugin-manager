@@ -47,7 +47,6 @@
   },
   "scripts": {
     "build": "tsdown",
-    "prepare": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types \"tests/*.spec.ts\""
   },
