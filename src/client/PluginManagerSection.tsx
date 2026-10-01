@@ -290,9 +290,8 @@ function SelfCard({
   onCheck(): void
   onUpdate(): void
 }) {
-  const short = (sha: string): string => sha.slice(0, 7)
   const done = check !== undefined && check !== 'error' ? check : null
-  const verdict = done === null ? null : checkStatusText(done, t, short)
+  const verdict = done === null ? null : checkStatusText(done, t)
   const canUpdate = updateAvailable(check)
   return (
     <div className='dpm-self'>
@@ -303,7 +302,7 @@ function SelfCard({
           {canUpdate && done !== null && (
             <span className='dpm-badge'>
               {done.basis === 'commit'
-                ? t('update.commitAvailable', { sha: short(done.head?.sha ?? '') })
+                ? t('update.commitAvailable')
                 : t('update.available', { tag: done.latest?.tag ?? '' })}
             </span>
           )}
@@ -331,12 +330,12 @@ function SelfCard({
 }
 
 /** One line describing what a completed check found. */
-function checkStatusText(check: UpdateCheck, t: LocaleSeat['t'], short: (sha: string) => string): string {
+function checkStatusText(check: UpdateCheck, t: LocaleSeat['t']): string {
   if (!check.comparable) return t('update.commitUnknown')
   if (check.basis === 'commit') {
     if (check.head === undefined) return t('update.headUnknown')
     return check.updateAvailable
-      ? t('update.commitAvailable', { sha: short(check.head.sha) })
+      ? t('update.commitAvailable')
       : t('update.commitUptodate')
   }
   if (check.latest === null) return t('update.headUnknown')
@@ -371,14 +370,14 @@ function PluginRow({
           {canUpdate && done !== null && (
             <span className='dpm-badge'>
               {done.basis === 'commit'
-                ? t('update.commitAvailable', { sha: (done.head?.sha ?? '').slice(0, 7) })
+                ? t('update.commitAvailable')
                 : t('update.available', { tag: done.latest?.tag ?? '' })}
             </span>
           )}
         </div>
         {done !== null && (
           <div className='dpm-verdict'>
-            {checkStatusText(done, t, (sha) => sha.slice(0, 7))}
+            {checkStatusText(done, t)}
           </div>
         )}
         <div className='dpm-spec' title={entry.spec}>
