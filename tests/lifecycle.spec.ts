@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, it } from 'node:test'
 import {
-  createFakePnpm, mkdtempSync, rmSync, writeProfileManifest,
+  createFakePnpm, mkdtempSync, rmSync, writeFileSync, writeProfileManifest,
   type FakePackage,
 } from './helpers.ts'
 import {
@@ -33,6 +33,9 @@ function makeSession(
     failAddWith?: string
     failRemoveWith?: string
     latestRelease?: { tag: string; name: string; url: string; publishedAt: string } | null
+    branchHead?: { sha: string; message: string; url: string; date: string } | null
+    /** Commit sha the fake pnpm records in pnpm-lock.yaml per repository. */
+    installedCommits?: Record<string, string>
     runnerOverride?: (args: readonly string[]) => { code: number; output: string } | undefined
   } = {},
 ): Session {
@@ -55,8 +58,32 @@ function makeSession(
     profileDir,
     runner: runnerAdapter,
     latestReleaseFn: async () => options.latestRelease ?? null,
+    branchHeadFn: async () => options.branchHead ?? null,
   })
+  if (options.installedCommits !== undefined) {
+    writeLockfile(profileDir, options.installedCommits)
+  }
   return { manager, profileDir, runner: runner as unknown as ReturnType<typeof createFakePnpm> }
+}
+
+/**
+ * Write a pnpm-shaped lockfile so `installedCommit` has the same input it finds
+ * in a real profile: each dependency's resolved commit as a codeload URL.
+ */
+function writeLockfile(profileDir: string, commits: Record<string, string>): void {
+  const lines = ["lockfileVersion: '9.0'", '', 'importers:', '', '  .:', '    dependencies:']
+  for (const [repo, sha] of Object.entries(commits)) {
+    const name = repo === 'temidayoxyz/deep-contrast'
+      ? 'dsh-deep-contrast'
+      : repo === 'temidayoxyz/deep-tariff' ? 'dsh-deep-tariff' : repo.split('/').join('-')
+    lines.push(
+      `      ${name}:`,
+      `        specifier: github:${repo}`,
+      `        version: https://codeload.github.com/${repo}/tar.gz/${sha}`,
+    )
+  }
+  lines.push('')
+  writeFileSync(join(profileDir, 'pnpm-lock.yaml'), lines.join('\n'))
 }
 
 function dispose(session: Session): void {
@@ -269,6 +296,7 @@ describe('update', () => {
       const callsBefore = session.runner.calls.length
       const check = await session.manager.checkUpdate('dsh-deep-contrast')
       assert.equal(check.updateAvailable, false)
+      assert.equal(check.basis, 'release')
       const result = await session.manager.update('dsh-deep-contrast')
       assert.equal(result.version, '0.1.0')
       assert.equal(session.runner.calls.length, callsBefore)
@@ -295,6 +323,107 @@ describe('update', () => {
       assert.equal(state.dependencies['dsh-deep-contrast'], 'github:temidayoxyz/deep-contrast')
       assert.equal(readInstalledVersion(session.profileDir, 'dsh-deep-contrast'), '0.1.0')
       assert.deepEqual(state.bundles, ['dsh-deep-contrast'])
+    } finally {
+      dispose(session)
+    }
+  })
+})
+
+describe('update check without releases', () => {
+  const OLD = '70d8745a4e6a9cc81fb611a506e0d3312b8480a3'
+  const NEW = 'ced4b9259b1abf9170b6067a03c24c7cd1a04efc'
+
+  it('compares the installed commit against the branch head when there are no releases', async () => {
+    const session = makeSession(
+      { 'temidayoxyz/deep-contrast': contrast },
+      {
+        latestRelease: null,
+        branchHead: { sha: NEW, message: 'fix: something', url: '', date: '2026-09-30' },
+        installedCommits: { 'temidayoxyz/deep-contrast': OLD },
+      },
+    )
+    try {
+      await session.manager.install('temidayoxyz/deep-contrast')
+      const check = await session.manager.checkUpdate('dsh-deep-contrast')
+      assert.equal(check.basis, 'commit')
+      assert.equal(check.latest, null)
+      assert.equal(check.comparable, true)
+      assert.equal(check.updateAvailable, true, 'a newer commit than the installed one is an update')
+      assert.equal(check.head?.sha, NEW)
+    } finally {
+      dispose(session)
+    }
+  })
+
+  it('reports up to date when the installed commit is the branch head', async () => {
+    const session = makeSession(
+      { 'temidayoxyz/deep-contrast': contrast },
+      {
+        latestRelease: null,
+        branchHead: { sha: OLD, message: 'initial', url: '', date: '2026-09-01' },
+        installedCommits: { 'temidayoxyz/deep-contrast': OLD },
+      },
+    )
+    try {
+      await session.manager.install('temidayoxyz/deep-contrast')
+      const check = await session.manager.checkUpdate('dsh-deep-contrast')
+      assert.equal(check.updateAvailable, false)
+      assert.equal(check.basis, 'commit')
+    } finally {
+      dispose(session)
+    }
+  })
+
+  it('does not claim up-to-date when the installed commit cannot be read', async () => {
+    const session = makeSession(
+      { 'temidayoxyz/deep-contrast': contrast },
+      {
+        latestRelease: null,
+        branchHead: { sha: NEW, message: 'fix: something', url: '', date: '2026-09-30' },
+        // No lockfile written: the comparison is impossible, not equal.
+      },
+    )
+    try {
+      await session.manager.install('temidayoxyz/deep-contrast')
+      const check = await session.manager.checkUpdate('dsh-deep-contrast')
+      assert.equal(check.comparable, false)
+      assert.equal(check.updateAvailable, true, 'an unreadable lockfile keeps the refresh option open')
+    } finally {
+      dispose(session)
+    }
+  })
+
+  it('reports nothing to compare when the branch head cannot be read', async () => {
+    const session = makeSession(
+      { 'temidayoxyz/deep-contrast': contrast },
+      { latestRelease: null, branchHead: null, installedCommits: { 'temidayoxyz/deep-contrast': OLD } },
+    )
+    try {
+      await session.manager.install('temidayoxyz/deep-contrast')
+      const check = await session.manager.checkUpdate('dsh-deep-contrast')
+      assert.equal(check.head, undefined)
+      assert.equal(check.comparable, false)
+      assert.equal(check.updateAvailable, false)
+    } finally {
+      dispose(session)
+    }
+  })
+
+  it('prefers a published release over the branch head', async () => {
+    const session = makeSession(
+      { 'temidayoxyz/deep-contrast': contrast },
+      {
+        latestRelease: { tag: 'v0.2.0', name: '0.2.0', url: 'https://example.test/v0.2.0', publishedAt: '2026-09-13' },
+        branchHead: { sha: NEW, message: 'unreleased work', url: '', date: '2026-09-30' },
+        installedCommits: { 'temidayoxyz/deep-contrast': OLD },
+      },
+    )
+    try {
+      await session.manager.install('temidayoxyz/deep-contrast')
+      const check = await session.manager.checkUpdate('dsh-deep-contrast')
+      assert.equal(check.basis, 'release')
+      assert.equal(check.head, undefined, 'a release-based check does not report a commit')
+      assert.equal(check.updateAvailable, true)
     } finally {
       dispose(session)
     }

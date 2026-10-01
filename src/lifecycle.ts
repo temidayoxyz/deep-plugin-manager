@@ -27,11 +27,11 @@ import {
   NotInstalledError,
 } from './errors.ts'
 import {
-  latestRelease, isNewerVersion, parseRepoRef, repoFromSpec, specFor, repoMetadata,
-  type ReleaseInfo, type RepoRef,
+  latestRelease, isNewerVersion, parseRepoRef, repoFromSpec, specFor, repoMetadata, branchHead,
+  type HeadInfo, type ReleaseInfo, type RepoRef,
 } from './github.ts'
 import {
-  assertManageableName, listPlugins, readInstalledPackage, readManifest, writeManifest,
+  assertManageableName, installedCommit, listPlugins, readInstalledPackage, readManifest, writeManifest,
   type PluginEntry, type ProfileManifest,
 } from './profile.ts'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -106,6 +106,9 @@ export interface InstallResult {
   restartRequired: true
 }
 
+/** How an update check determined its verdict. */
+export type CheckBasis = 'release' | 'commit'
+
 /** Result of an update check. */
 export interface UpdateCheck {
   name: string
@@ -113,10 +116,25 @@ export interface UpdateCheck {
   current: string
   /** Latest GitHub release, when the repository publishes releases. */
   latest: ReleaseInfo | null
-  /** Whether the latest release is newer than the installed version. */
+  /**
+   * Head commit of the tracked branch, reported when the repository publishes
+   * no releases (the case where a version comparison cannot decide anything).
+   */
+  head?: HeadInfo
+  /** Whether something newer is available than what is installed. */
   updateAvailable: boolean
   /** Release URL, when a release exists. */
   releaseUrl?: string
+  /**
+   * What the verdict was based on. `commit` means the comparison was made
+   * against the branch head because the repository has no releases.
+   */
+  basis: CheckBasis
+  /**
+   * Whether the installed commit could be read, so the caller can tell
+   * 'checked and equal' from 'could not compare'.
+   */
+  comparable: boolean
 }
 
 /** Result of one successful update. */
@@ -165,6 +183,8 @@ export interface PluginManagerOptions {
   latestReleaseFn?: typeof latestRelease
   /** Injected GitHub repository metadata lookup (tests substitute a fake). */
   repoMetadataFn?: typeof repoMetadata
+  /** Injected GitHub branch-head lookup (tests substitute a fake). */
+  branchHeadFn?: typeof branchHead
 }
 
 /**
@@ -184,6 +204,7 @@ export function createPluginManager(options: PluginManagerOptions): {
   const { profileDir, runner } = options
   const releaseLookup = options.latestReleaseFn ?? latestRelease
   const metadataLookup = options.repoMetadataFn ?? repoMetadata
+  const headLookup = options.branchHeadFn ?? branchHead
 
   const dependencyNames = (manifest: ProfileManifest): string[] =>
     Object.keys(manifest.dependencies ?? {})
@@ -391,15 +412,35 @@ export function createPluginManager(options: PluginManagerOptions): {
       }
       const current = readInstalledPackage(profileDir, name).version
       const latest = await releaseLookup(repo)
-      if (latest === null) {
-        return { name, current, latest: null, updateAvailable: false }
+      if (latest !== null) {
+        return {
+          name,
+          current,
+          latest,
+          updateAvailable: isNewerVersion(current, latest.tag),
+          ...(latest.url === undefined ? {} : { releaseUrl: latest.url }),
+          basis: 'release',
+          comparable: true,
+        }
       }
+      // No releases: a version comparison decides nothing, so compare the
+      // commit pnpm installed against the branch head instead.
+      const head = await headLookup(repo)
+      if (head === null) {
+        return { name, current, latest: null, updateAvailable: false, basis: 'commit', comparable: false }
+      }
+      const installed = installedCommit(profileDir, name)
       return {
         name,
         current,
-        latest,
-        updateAvailable: isNewerVersion(current, latest.tag),
-        ...(latest.url === undefined ? {} : { releaseUrl: latest.url }),
+        latest: null,
+        head,
+        // An unreadable lockfile means "cannot compare", which must never be
+        // reported as "up to date"; treat it as available so the user keeps
+        // the option of refreshing.
+        updateAvailable: installed === undefined ? true : installed !== head.sha,
+        basis: 'commit',
+        comparable: installed !== undefined,
       }
     },
 

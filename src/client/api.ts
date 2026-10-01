@@ -36,6 +36,12 @@ export interface UpdateCheck {
   latest: { tag: string; name: string; url: string; publishedAt: string } | null
   updateAvailable: boolean
   releaseUrl?: string
+  /** Head commit of the tracked branch, when the check fell back to commits. */
+  head?: { sha: string; message: string; url: string; date: string }
+  /** 'release' when compared against a release tag, 'commit' against the branch head. */
+  basis: 'release' | 'commit'
+  /** Whether the installed commit was readable, so a comparison was possible. */
+  comparable: boolean
 }
 
 /** Result of one update. */
