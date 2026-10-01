@@ -124,6 +124,63 @@ describe('listPlugins', () => {
   })
 })
 
+describe('listPlugins commit reporting', () => {
+  it('carries the installed commit so a branch install is identifiable', () => {
+    const profileDir = makeTempProfile()
+    const SHA = 'ced4b9259b1abf9170b6067a03c24c7cd1a04efc'
+    try {
+      // Two plugins at the same declared version, on different commits: the
+      // version alone cannot tell them apart.
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({
+        dependencies: {
+          'dsh-deep-contrast': 'github:t/deep-contrast',
+          'dsh-deep-tariff': 'github:t/deep-tariff',
+        },
+        dsh: { profile: { bundles: [] } },
+      }))
+      writePlugin(profileDir, 'dsh-deep-contrast', { name: 'dsh-deep-contrast', version: '0.1.0' })
+      writePlugin(profileDir, 'dsh-deep-tariff', { name: 'dsh-deep-tariff', version: '0.1.0' })
+      writeFileSync(join(profileDir, 'pnpm-lock.yaml'), [
+        'importers:',
+        '',
+        '  .:',
+        '    dependencies:',
+        '      dsh-deep-contrast:',
+        '        specifier: github:t/deep-contrast',
+        `        version: https://codeload.github.com/t/deep-contrast/tar.gz/${SHA}`,
+        '      dsh-deep-tariff:',
+        '        specifier: github:t/deep-tariff',
+        `        version: https://codeload.github.com/t/deep-tariff/tar.gz/${'0'.repeat(39)}1`,
+        '',
+      ].join('\n'))
+
+      const plugins = listPlugins(profileDir)
+      const contrast = plugins.find((entry) => entry.name === 'dsh-deep-contrast')
+      const tariff = plugins.find((entry) => entry.name === 'dsh-deep-tariff')
+      assert.equal(contrast?.version, '0.1.0')
+      assert.equal(contrast?.commit, SHA)
+      assert.equal(tariff?.commit, `${'0'.repeat(39)}1`)
+    } finally {
+      rmSync(profileDir, { recursive: true, force: true })
+    }
+  })
+
+  it('omits the commit when the lockfile cannot answer', () => {
+    const profileDir = makeTempProfile()
+    try {
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({
+        dependencies: { 'dsh-x': 'npm:dsh-x@1.0.0' },
+        dsh: { profile: { bundles: [] } },
+      }))
+      writePlugin(profileDir, 'dsh-x', { name: 'dsh-x', version: '1.0.0' })
+      const plugins = listPlugins(profileDir)
+      assert.equal(plugins[0]?.commit, undefined)
+    } finally {
+      rmSync(profileDir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('isReservedName', () => {
   it('protects harness packages and the manager itself', () => {
     assert.equal(isReservedName('@deepseek-ai/dsh-base'), true)

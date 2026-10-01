@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { os, path } from './helpers.ts'
 import { describe, it } from 'node:test'
-import { installedCommit } from '../src/profile.ts'
+import { installedCommit, installedCommits, listPlugins } from '../src/profile.ts'
 
 const { tmpdir } = os
 const { join } = path
@@ -117,6 +117,39 @@ describe('installedCommit', () => {
         SHA_A,
         'the root importer wins, not the member that happens to be listed first',
       )
+    } finally {
+      rmSync(profileDir, { recursive: true, force: true })
+    }
+  })
+
+  it('reads every dependency in one pass', () => {
+    const profileDir = makeTempProfile()
+    try {
+      writeLock(profileDir, [
+        'importers:',
+        '',
+        '  .:',
+        '    dependencies:',
+        '      dsh-deep-plugin-manager:',
+        `        specifier: github:temidayoxyz/deep-plugin-manager`,
+        `        version: https://codeload.github.com/temidayoxyz/deep-plugin-manager/tar.gz/${SHA_A}`,
+        '      dsh-deep-contrast:',
+        '        specifier: github:temidayoxyz/deep-contrast',
+        `        version: https://codeload.github.com/temidayoxyz/deep-contrast/tar.gz/${SHA_B}`,
+        '      dsh-registry:',
+        '        specifier: npm:some-registry-pkg',
+        '        version: 2.0.0',
+        '',
+      ].join('\n'))
+      const commits = installedCommits(profileDir)
+      assert.equal(commits['dsh-deep-plugin-manager'], SHA_A)
+      assert.equal(commits['dsh-deep-contrast'], SHA_B)
+      assert.equal(
+        commits['dsh-registry'],
+        undefined,
+        'a non-github dependency contributes no commit',
+      )
+      assert.equal(installedCommit(profileDir, 'dsh-deep-plugin-manager'), SHA_A)
     } finally {
       rmSync(profileDir, { recursive: true, force: true })
     }

@@ -19,6 +19,8 @@ export interface PluginEntry {
   description?: string
   repository?: string
   author?: string
+  /** The exact commit pnpm installed, for GitHub-sourced plugins. */
+  commit?: string
 }
 
 /** Result of one install. */
@@ -55,6 +57,8 @@ export interface UpdateResult {
 export interface SelfInfo {
   name: string
   version: string
+  /** The exact commit pnpm installed; changes on every update. */
+  commit?: string
   spec: string
   /** Source repository as owner/repo, when installed from GitHub. */
   repo?: string

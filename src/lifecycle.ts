@@ -194,6 +194,12 @@ export interface SelfInfo {
   name: string
   /** Installed version, when the package is materialized. */
   version: string
+  /**
+   * The exact commit pnpm installed. Unlike `version`, this changes on every
+   * update, which is what makes it the meaningful identity for a plugin
+   * installed from a branch.
+   */
+  commit?: string
   /** The spec the profile records for it (e.g. `github:owner/repo`). */
   spec: string
   /** The source repository as owner/repo, when installed from GitHub. */
@@ -346,9 +352,11 @@ export function createPluginManager(options: PluginManagerOptions): {
       }
       const repo = repoFromSpec(spec)
       const refusal = selfUpdateRefusal()
+      const commit = installedCommit(profileDir, SELF_NAME)
       return {
         name: SELF_NAME,
         version,
+        ...(commit === undefined ? {} : { commit }),
         spec,
         ...(repo === undefined ? {} : { repo: [repo.owner, repo.repo].join('/') }),
         patchMounted: isPatchMounted(profileDir, SELF_NAME),

@@ -53,6 +53,16 @@ export interface PluginEntry {
   repository?: string
   /** Author field from the plugin's own manifest, when declared. */
   author?: string
+  /**
+   * The exact commit pnpm installed, for GitHub-sourced plugins.
+   *
+   * This is what actually distinguishes one installation from another. A
+   * `version` field is declared once in the repository and is therefore the
+   * same for every commit that does not bump it, which is why an unpinned
+   * install kept reporting the same version no matter how often it was
+   * updated.
+   */
+  commit?: string
 }
 
 /** Whether a package name belongs to the Harness core or to this manager. */
@@ -186,14 +196,17 @@ export function writeManifest(profileDir: string, manifest: ProfileManifest): vo
 export function listPlugins(profileDir: string): PluginEntry[] {
   const manifest = readManifest(profileDir)
   const bundles = new Set(manifest.dsh?.profile?.bundles ?? [])
+  // One lockfile read for the whole list, not one per plugin.
+  const commits = installedCommits(profileDir)
   const entries: PluginEntry[] = []
   for (const [name, spec] of Object.entries(manifest.dependencies ?? {})) {
     if (isReservedName(name)) continue
+    const commit = commits[name]
     const manifestPath = join(profileDir, 'node_modules', ...name.split('/'), 'package.json')
     if (!existsSync(manifestPath)) {
       // Declared but not materialized (interrupted install): report it so the
       // UI can surface the broken state instead of hiding it.
-      entries.push({ name, version: '', spec, enabled: bundles.has(name) })
+      entries.push({ name, version: '', spec, enabled: bundles.has(name), ...(commit === undefined ? {} : { commit }) })
       continue
     }
     try {
@@ -214,9 +227,10 @@ export function listPlugins(profileDir: string): PluginEntry[] {
           && typeof (installed.repository as { url?: unknown }).url === 'string'
           ? (installed.repository as { url: string }).url
           : typeof installed.repository === 'string' ? installed.repository : undefined,
+        ...(commit === undefined ? {} : { commit }),
       })
     } catch {
-      entries.push({ name, version: '', spec, enabled: bundles.has(name) })
+      entries.push({ name, version: '', spec, enabled: bundles.has(name), ...(commit === undefined ? {} : { commit }) })
     }
   }
   return entries.sort((left, right) => left.name.localeCompare(right.name))
@@ -251,11 +265,10 @@ function indentOf(line: string): number {
 }
 
 /**
- * Read the commit pnpm actually installed for one GitHub dependency.
+ * Read every GitHub dependency's resolved commit from `pnpm-lock.yaml`.
  *
  * pnpm resolves a `github:` spec to a codeload tarball URL whose last path
- * segment is the exact commit, and records it in `pnpm-lock.yaml` under the
- * root importer:
+ * segment is the exact commit, and records it under the root importer:
  *
  * ```yaml
  * dsh-deep-plugin-manager:
@@ -263,31 +276,34 @@ function indentOf(line: string): number {
  *   version: https://codeload.github.com/owner/repo/tar.gz/<sha>
  * ```
  *
- * That recorded SHA is the authoritative answer to "which commit is installed",
- * so a release-less repository can still be compared against its branch head.
- * The lockfile is pnpm's own file rather than the profile manifest, so the read
- * is deliberately forgiving: the root importer block is located by indentation,
- * the dependency's own two lines are read, and anything unrecognized yields
- * `undefined` ("cannot compare") instead of a guess.
+ * That recorded SHA is the authoritative answer to "which commit is
+ * installed". The lockfile is pnpm's own file rather than the profile
+ * manifest, so the read is deliberately forgiving: the root importer block
+ * is located by indentation, each dependency's own `specifier`/`version`
+ * pair is read, and anything unrecognized is simply absent from the result
+ * rather than guessed at.
+ *
+ * Parsed once per call, so listing a profile with many plugins does not
+ * re-read the lockfile per plugin.
  *
  * @param profileDir - the profile directory.
- * @param name - dependency name (the package name, which is the lockfile key).
- * @returns the installed commit SHA, or undefined when it cannot be determined.
+ * @returns dependency name to installed commit SHA; empty when unreadable.
  */
-export function installedCommit(profileDir: string, name: string): string | undefined {
+export function installedCommits(profileDir: string): Record<string, string> {
+  const found: Record<string, string> = {}
   const lockPath = join(profileDir, 'pnpm-lock.yaml')
-  if (!existsSync(lockPath)) return undefined
+  if (!existsSync(lockPath)) return found
   let lines: string[]
   try {
     lines = readFileSync(lockPath, 'utf8').split(/\r?\n/)
   } catch {
-    return undefined
+    return found
   }
 
   // Scope to the root importer (`  .:`), the one that holds the profile's own
   // dependencies; a workspace member's block must not answer for the profile.
   const importersAt = lines.findIndex((line) => line.trimEnd() === 'importers:')
-  if (importersAt === -1) return undefined
+  if (importersAt === -1) return found
   let rootAt = -1
   let rootIndent = 0
   for (let index = importersAt + 1; index < lines.length; index += 1) {
@@ -306,15 +322,15 @@ export function installedCommit(profileDir: string, name: string): string | unde
     }
     if (indent <= rootIndent) break
   }
-  if (rootAt === -1) return undefined
+  if (rootAt === -1) return found
 
-  // Within the root block, find this dependency's `specifier`/`version` pair.
-  const quotedName = `'${name}'`
+  // Within the root block, collect each dependency's `specifier`/`version` pair.
   for (let index = rootAt + 1; index < lines.length; index += 1) {
     const line = lines[index] ?? ''
     if (line.trim() === '') continue
     if (indentOf(line) <= rootIndent) break
-    if (line.trim() !== `${name}:` && line.trim() !== `${quotedName}:`) continue
+    const dependency = line.trim().replace(/:$/, '')
+    if (dependency === '' || dependency.includes(':')) continue
     let specifier = ''
     let version = ''
     for (let inner = index + 1; inner < lines.length; inner += 1) {
@@ -329,11 +345,22 @@ export function installedCommit(profileDir: string, name: string): string | unde
         break
       }
     }
-    if (specifier === '' || !specifier.startsWith('github:')) return undefined
+    if (!specifier.startsWith('github:')) continue
     const sha = COMMIT_SHA.exec(version)?.[1]
-    return sha
+    if (sha !== undefined) found[dependency.replaceAll("'", '')] = sha
   }
-  return undefined
+  return found
+}
+
+/**
+ * The commit pnpm actually installed for one GitHub dependency, or undefined
+ * when the lockfile cannot answer for it.
+ * @param profileDir - the profile directory.
+ * @param name - dependency name (the package name, which is the lockfile key).
+ * @returns the installed commit SHA, or undefined.
+ */
+export function installedCommit(profileDir: string, name: string): string | undefined {
+  return installedCommits(profileDir)[name]
 }
 
 /**

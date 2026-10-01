@@ -299,6 +299,9 @@ function SelfCard({
         <div>
           <span className='dpm-name'>{t('self.title')}</span>
           {self.version !== '' && <span className='dpm-version'>{self.version}</span>}
+          {self.commit !== undefined && (
+            <span className='dpm-commit' title={self.commit}>{self.commit.slice(0, 7)}</span>
+          )}
           {canUpdate && done !== null && (
             <span className='dpm-badge'>
               {done.basis === 'commit'
@@ -367,6 +370,9 @@ function PluginRow({
         <div>
           <span className='dpm-name'>{entry.displayName ?? entry.name}</span>
           {entry.version !== '' && <span className='dpm-version'>{entry.version}</span>}
+          {entry.commit !== undefined && (
+            <span className='dpm-commit' title={entry.commit}>{entry.commit.slice(0, 7)}</span>
+          )}
           {canUpdate && done !== null && (
             <span className='dpm-badge'>
               {done.basis === 'commit'

@@ -139,6 +139,12 @@ export const SECTION_STYLES = `
   color: var(--dsw-alias-label-tertiary);
   margin-left: 6px;
 }
+.dpm-commit {
+  font-size: 11px;
+  font-family: var(--ds-font-family-code, monospace);
+  color: var(--dsw-alias-label-tertiary);
+  margin-left: 6px;
+}
 .dpm-pkg {
   font-size: 11px;
   color: var(--dsw-alias-label-caption);
