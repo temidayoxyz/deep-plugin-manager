@@ -8,7 +8,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { ManagerError } from './errors.ts'
-import type { ManagedEntry, InstallResult, PluginManagerOptions, UpdateCheck, UpdateResult } from './lifecycle.ts'
+import type { ManagedEntry, InstallResult, PluginManagerOptions, SelfInfo, UpdateCheck, UpdateResult } from './lifecycle.ts'
 import type { ProfileManifest } from './profile.ts'
 import { createPluginManager } from './lifecycle.ts'
 
@@ -18,12 +18,14 @@ const MAX_BODY_BYTES = 64 * 1024
 /** The management API as the client UI consumes it. */
 export interface PluginManagerApi {
   list(): Promise<ManagedEntry[]>
+  self(): SelfInfo
   install(input: string): Promise<InstallResult>
   enable(name: string): void
   disable(name: string): void
   uninstall(name: string): Promise<void>
   checkUpdate(name: string): Promise<UpdateCheck>
   update(name: string): Promise<UpdateResult>
+  selfUpdate(): Promise<UpdateResult>
 }
 
 /**
@@ -52,6 +54,18 @@ export async function handleRequest(
   try {
     if (path === '/deep-plugin-manager/plugins' && method === 'GET') {
       sendJson(res, 200, { plugins: await api.list() })
+      return
+    }
+    if (path === '/deep-plugin-manager/self' && method === 'GET') {
+      sendJson(res, 200, { self: api.self() })
+      return
+    }
+    // Self-update has its own route rather than reusing `/update` with a name:
+    // the manager is a reserved name everywhere else, and a dedicated
+    // endpoint makes "update the manager itself" an explicit, single-sourced
+    // operation instead of a name the client could pass to any handler.
+    if (path === '/deep-plugin-manager/self-update' && method === 'POST') {
+      sendJson(res, 200, { result: await api.selfUpdate() })
       return
     }
     if (path === '/deep-plugin-manager/install' && method === 'POST') {

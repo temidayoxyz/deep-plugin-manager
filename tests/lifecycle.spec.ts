@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, it } from 'node:test'
 import {
-  createFakePnpm, mkdtempSync, rmSync, writeFileSync, writeProfileManifest,
+  createFakePnpm, mkdirSync, mkdtempSync, rmSync, writeFileSync, writeProfileManifest,
   type FakePackage,
 } from './helpers.ts'
 import {
@@ -424,6 +424,172 @@ describe('update check without releases', () => {
       assert.equal(check.basis, 'release')
       assert.equal(check.head, undefined, 'a release-based check does not report a commit')
       assert.equal(check.updateAvailable, true)
+    } finally {
+      dispose(session)
+    }
+  })
+})
+
+describe('self update', () => {
+  const managerPkg: FakePackage = {
+    name: 'dsh-deep-plugin-manager', version: '0.1.0', plugin: true, repo: 'temidayoxyz/deep-plugin-manager',
+  }
+
+  /**
+   * Put the manager into a profile the way the CLI would have: the profile
+   * manifest declares it and the package is materialized on disk. It cannot be
+   * installed through `install()`, because that refuses reserved names — which
+   * is the property these tests also assert.
+   */
+  function makeSelfInstalledProfile(
+    options: { spec: string; bundles?: string[] } = { spec: 'github:temidayoxyz/deep-plugin-manager' },
+  ): { profileDir: string; runner: ReturnType<typeof createFakePnpm> } {
+    const profileDir = mkdtempSync(join(tmpdir(), 'dpm-self-'))
+    writeProfileManifest(profileDir, { 'dsh-deep-plugin-manager': options.spec }, options.bundles ?? ['dsh-deep-plugin-manager'])
+    const dir = join(profileDir, 'node_modules', 'dsh-deep-plugin-manager')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'dsh-deep-plugin-manager',
+      version: '0.1.0',
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+    }))
+    const runner = createFakePnpm(profileDir, {
+      packages: { 'temidayoxyz/deep-plugin-manager': managerPkg },
+    })
+    return { profileDir, runner }
+  }
+
+  it('reports itself as updatable when installed from GitHub', async () => {
+    const { profileDir, runner } = makeSelfInstalledProfile()
+    try {
+      const manager = createPluginManager({ profileDir, runner })
+      const info = manager.self()
+      assert.equal(info.name, 'dsh-deep-plugin-manager')
+      assert.equal(info.version, '0.1.0')
+      assert.equal(info.repo, 'temidayoxyz/deep-plugin-manager')
+      assert.equal(info.updatable, true)
+      assert.equal(info.enabled, true)
+    } finally {
+      rmSync(profileDir, { recursive: true, force: true })
+    }
+  })
+
+  it('updates itself to a newer published release', async () => {
+    const { profileDir, runner } = makeSelfInstalledProfile()
+    try {
+      const manager = createPluginManager({
+        profileDir,
+        runner,
+        latestReleaseFn: async () => ({ tag: 'v0.2.0', name: '0.2.0', url: '', publishedAt: '2026-09-13' }),
+      })
+      const result = await manager.selfUpdate()
+      assert.equal(result.name, 'dsh-deep-plugin-manager')
+      assert.equal(result.restartRequired, true)
+      const state = readState(profileDir)
+      assert.equal(
+        state.dependencies['dsh-deep-plugin-manager'],
+        'github:temidayoxyz/deep-plugin-manager#v0.2.0',
+        'a release-based self-update pins to the release tag',
+      )
+      assert.deepEqual(state.bundles, ['dsh-deep-plugin-manager'], 'the manager stays enabled across its own update')
+    } finally {
+      rmSync(profileDir, { recursive: true, force: true })
+    }
+  })
+
+  it('refreshes to the branch head when the repository publishes no releases', async () => {
+    const { profileDir, runner } = makeSelfInstalledProfile()
+    try {
+      const manager = createPluginManager({
+        profileDir,
+        runner,
+        latestReleaseFn: async () => null,
+      })
+      const result = await manager.selfUpdate()
+      assert.equal(result.name, 'dsh-deep-plugin-manager')
+      const state = readState(profileDir)
+      assert.equal(
+        state.dependencies['dsh-deep-plugin-manager'],
+        'github:temidayoxyz/deep-plugin-manager',
+        'a release-less repository keeps its unpinned spec so the branch head is tracked',
+      )
+      assert.ok(
+        runner.calls.some((call) => call[0] === 'add' && call[1] === 'github:temidayoxyz/deep-plugin-manager'),
+        'the same spec is re-added, which is what moves the lockfile onto the head commit',
+      )
+    } finally {
+      rmSync(profileDir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a self-update from a local checkout', async () => {
+    const profileDir = mkdtempSync(join(tmpdir(), 'dpm-self-link-'))
+    try {
+      // A link: spec is what a development checkout looks like in the profile.
+      writeProfileManifest(
+        profileDir,
+        { 'dsh-deep-plugin-manager': 'link:../../deep-plugin-manager' },
+        ['dsh-deep-plugin-manager'],
+      )
+      const manager = createPluginManager({ profileDir, runner: async () => ({ code: 0, output: '' }) })
+      const info = manager.self()
+      assert.equal(info.updatable, false)
+      assert.match(info.reason ?? '', /local checkout/)
+      await assert.rejects(() => manager.selfUpdate(), ManagerError)
+    } finally {
+      rmSync(profileDir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a self-update when the manager is patch-mounted', async () => {
+    const profileDir = mkdtempSync(join(tmpdir(), 'dpm-self-patch-'))
+    try {
+      writeProfileManifest(
+        profileDir,
+        { 'dsh-deep-plugin-manager': 'github:temidayoxyz/deep-plugin-manager' },
+        [],
+      )
+      // The shape the manager's own cordis.patch.yml uses: an insert row whose
+      // `name:` key is the package name.
+      writeFileSync(
+        join(profileDir, 'cordis.patch.yml'),
+        '- insert:\n    - id: deep-plugin-manager\n      name: dsh-deep-plugin-manager\n',
+      )
+      const manager = createPluginManager({ profileDir, runner: async () => ({ code: 0, output: '' }) })
+      const info = manager.self()
+      assert.equal(info.patchMounted, true)
+      assert.equal(info.updatable, false)
+      assert.match(info.reason ?? '', /cordis\.patch\.yml/)
+      await assert.rejects(() => manager.selfUpdate(), ManagerError)
+    } finally {
+      rmSync(profileDir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the manager out of the ordinary plugin list and generic operations', async () => {
+    const session = makeSession({ 'temidayoxyz/deep-contrast': contrast })
+    try {
+      await session.manager.install('temidayoxyz/deep-contrast')
+      // Declare the manager the way the profile would, without installing it
+      // through install() — that path refuses reserved names by design.
+      const manifestPath = join(session.profileDir, 'package.json')
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+        dependencies?: Record<string, string>
+        dsh?: { profile?: { bundles?: string[] } }
+      }
+      manifest.dependencies = { ...manifest.dependencies, 'dsh-deep-plugin-manager': 'github:temidayoxyz/deep-plugin-manager' }
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+
+      const plugins = await session.manager.list()
+      assert.equal(
+        plugins.some((entry) => entry.name === 'dsh-deep-plugin-manager'),
+        false,
+        'the manager updates through its own card, not as a listable plugin row',
+      )
+      // And the reserved-name guard still holds for the generic operations.
+      await assert.rejects(() => session.manager.update('dsh-deep-plugin-manager'), ReservedNameError)
+      await assert.rejects(() => session.manager.uninstall('dsh-deep-plugin-manager'), ReservedNameError)
+      assert.throws(() => session.manager.disable('dsh-deep-plugin-manager'), ReservedNameError)
     } finally {
       dispose(session)
     }

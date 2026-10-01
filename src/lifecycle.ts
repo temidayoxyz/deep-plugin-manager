@@ -32,6 +32,7 @@ import {
 } from './github.ts'
 import {
   assertManageableName, installedCommit, listPlugins, readInstalledPackage, readManifest, writeManifest,
+  SELF_NAME,
   type PluginEntry, type ProfileManifest,
 } from './profile.ts'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -187,6 +188,29 @@ export interface PluginManagerOptions {
   branchHeadFn?: typeof branchHead
 }
 
+/** What the manager reports about itself. */
+export interface SelfInfo {
+  /** The manager's own package name. */
+  name: string
+  /** Installed version, when the package is materialized. */
+  version: string
+  /** The spec the profile records for it (e.g. `github:owner/repo`). */
+  spec: string
+  /** The source repository as owner/repo, when installed from GitHub. */
+  repo?: string
+  /** Whether it is mounted through the profile's cordis.patch.yml. */
+  patchMounted: boolean
+  /** Whether it is currently in the enabled bundle list. */
+  enabled: boolean
+  /**
+   * Whether the manager can update itself here; false only for a local
+   * (`link:`) checkout or a patch-mounted install.
+   */
+  updatable: boolean
+  /** Why self-update is refused, when it is. */
+  reason?: string
+}
+
 /**
  * Create the lifecycle manager bound to one profile directory.
  * @param options - profile directory, pnpm runner, optional GitHub overrides.
@@ -194,12 +218,14 @@ export interface PluginManagerOptions {
  */
 export function createPluginManager(options: PluginManagerOptions): {
   list(): Promise<ManagedEntry[]>
+  self(): SelfInfo
   install(input: string): Promise<InstallResult>
   enable(name: string): void
   disable(name: string): void
   uninstall(name: string): Promise<void>
   checkUpdate(name: string): Promise<UpdateCheck>
   update(name: string): Promise<UpdateResult>
+  selfUpdate(): Promise<UpdateResult>
 } {
   const { profileDir, runner } = options
   const releaseLookup = options.latestReleaseFn ?? latestRelease
@@ -212,6 +238,35 @@ export function createPluginManager(options: PluginManagerOptions): {
   /** Remove one dependency through pnpm; failures surface as RunnerError. */
   const removePackage = async (name: string): Promise<void> => {
     await runPnpm(runner, profileDir, ['remove', name], `remove ${name}`)
+  }
+
+  /**
+   * Why the manager cannot update itself, or undefined when it can.
+   *
+   * Self-update rewrites the very package the running host half was loaded
+   * from, so the two cases that cannot work are refused up front rather than
+   * left to fail inside pnpm:
+   *
+   * - a `link:`/workspace spec (the development checkout): there is no GitHub
+   *   repository to fetch a newer copy from;
+   * - patch-mounted through `cordis.patch.yml`: the running code comes from a
+   *   source tree, not from the installed package, so a package update would
+   *   silently not take effect.
+   */
+  const selfUpdateRefusal = (): string | undefined => {
+    let spec: string
+    try {
+      spec = specOf(SELF_NAME)
+    } catch {
+      return 'This build of the manager is not installed as a profile dependency.'
+    }
+    if (repoFromSpec(spec) === undefined) {
+      return 'The manager is installed from a local checkout (not a GitHub release source), so it cannot update itself here.'
+    }
+    if (isPatchMounted(profileDir, SELF_NAME)) {
+      return 'The manager is mounted through the profile\'s cordis.patch.yml; update the source tree it points at instead.'
+    }
+    return undefined
   }
 
   const metaCachePath = join(profileDir, '.dsh-deep-plugin-manager.json')
@@ -277,6 +332,30 @@ export function createPluginManager(options: PluginManagerOptions): {
         if (fresh?.description !== undefined) entry.description = fresh.description
       }))
       return entries
+    },
+
+    self(): SelfInfo {
+      const manifest = readManifest(profileDir)
+      const spec = manifest.dependencies?.[SELF_NAME] ?? ''
+      let version = ''
+      try {
+        version = readInstalledPackage(profileDir, SELF_NAME).version
+      } catch {
+        // Declared but not materialized: report the empty version rather than
+        // failing, so the page can still explain the state.
+      }
+      const repo = repoFromSpec(spec)
+      const refusal = selfUpdateRefusal()
+      return {
+        name: SELF_NAME,
+        version,
+        spec,
+        ...(repo === undefined ? {} : { repo: [repo.owner, repo.repo].join('/') }),
+        patchMounted: isPatchMounted(profileDir, SELF_NAME),
+        enabled: (manifest.dsh?.profile?.bundles ?? []).includes(SELF_NAME),
+        updatable: refusal === undefined,
+        ...(refusal === undefined ? {} : { reason: refusal }),
+      }
     },
 
     async install(input: string): Promise<InstallResult> {
@@ -441,6 +520,37 @@ export function createPluginManager(options: PluginManagerOptions): {
         updateAvailable: installed === undefined ? true : installed !== head.sha,
         basis: 'commit',
         comparable: installed !== undefined,
+      }
+    },
+
+    async selfUpdate(): Promise<UpdateResult> {
+      const refusal = selfUpdateRefusal()
+      if (refusal !== undefined) {
+        throw new ManagerError('self-update-unsupported', refusal, 409)
+      }
+      // The manager is a reserved name for every other operation; here the
+      // single self-update path is the one place it is deliberately allowed.
+      const current = readInstalledPackage(profileDir, SELF_NAME).version
+      const spec = specOf(SELF_NAME)
+      const repo = repoFromSpec(spec) as RepoRef
+      const latest = await releaseLookup(repo)
+      let target: string
+      if (latest === null) {
+        // No releases: re-add the same spec, which moves the lockfile onto the
+        // branch head and is what "update" means for a release-less repository.
+        target = spec
+        await runPnpm(runner, profileDir, ['add', spec], `update ${SELF_NAME}`)
+      } else if (!isNewerVersion(current, latest.tag)) {
+        return { name: SELF_NAME, version: current, restartRequired: true }
+      } else {
+        target = specFor({ ...repo, ref: latest.tag })
+        await runPnpm(runner, profileDir, ['add', target], `update ${SELF_NAME} to ${latest.tag}`)
+      }
+      await rememberMetadata(SELF_NAME, repo)
+      return {
+        name: SELF_NAME,
+        version: readInstalledPackage(profileDir, SELF_NAME).version || target,
+        restartRequired: true,
       }
     },
 
