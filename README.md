@@ -23,7 +23,8 @@ The Harness's plugin system is built on npm semantics: plugins are packages in a
 - **Install** from `owner/repository`, a github.com URL, or a `#tag`/branch pin
 - **Enable / disable** installed plugins (disabled plugins stay installed)
 - **Update** from the plugin's GitHub releases, preserving enabled state
-- **Check for updates** against the repository's latest published release
+- **Check for updates** against the repository's latest published release, or its branch head when it publishes none
+- **Self-update** the manager from its own page, without retyping a link
 - **Uninstall** with safe cleanup
 - **Validated installs** — the fetched package must satisfy the Harness plugin contract (`dsh.bundle.patch`), or the install is rolled back
 - **Clean failures** — pnpm output is captured and surfaced in the UI; nothing is left half-installed
@@ -62,9 +63,32 @@ Then start (or restart) the web UI and open **Settings → Plugin Manager**.
 | --- | --- |
 | Install | Paste `owner/repository` (or a GitHub URL) into the install box, click **Install** |
 | Enable / disable | Click the status pill on a plugin row; the change applies at the next Harness restart |
-| Check for updates | Click **Check for updates** on a row — the manager asks GitHub for the latest release |
+| Check for updates | Click **Check for updates** on a row - the manager asks GitHub for the latest release |
 | Update | Click **Update**; updates pin to the latest published release and preserve enabled state |
 | Uninstall | Click **Uninstall**, then confirm |
+| Update the manager | Use the card at the top of the page - see [Updating the manager itself](#updating-the-manager-itself) |
+
+### Updating the manager itself
+
+The card at the top of the page checks and updates the manager through the spec
+the profile already records for it, so the repository link never has to be typed
+again. **Check for updates** asks GitHub about that repository and reports
+whether anything newer is installed; **Update** appears only once a check has
+actually found something, and disappears again once the update lands.
+
+Repositories that publish releases are compared against the latest tag. Ones
+that publish none are compared against their branch head instead, so a plain
+push to the default branch is reported as an available update. The comparison
+uses the commit pnpm recorded in `pnpm-lock.yaml`, so it reflects what is
+actually installed rather than what was installed last.
+
+The manager cannot disable or uninstall itself - the code serving the page is
+the code being updated. Two installations also refuse self-update and say so on
+the card: a local `link:` checkout (there is no repository to fetch from) and a
+`cordis.patch.yml`-mounted install (the running code comes from a source tree,
+so a package update would not take effect).
+
+As with every other change here, the new code loads at the next Harness start.
 
 Accepted repository references:
 
@@ -96,7 +120,7 @@ By default the manager uses the pnpm the Harness itself bundles, which is by con
 
 - **No partial installs.** pnpm is transactional for `add`; if validation fails after a fetch (not a Harness plugin, reserved name), the package is removed and the manifest restored before the error surfaces.
 - **No destroyed state.** Uninstall detaches the bundle entry first; if package removal fails, the entry is restored. Update failures leave the previous installation untouched.
-- **No core access.** `@deepseek-ai/*` packages and the manager itself are refused everywhere.
+- **No core access.** `@deepseek-ai/*` packages and the manager itself are refused everywhere. The one deliberate exception is the self-update path, which exists as its own route and can only ever target the manager.
 - **No shell injection.** Every spawned argument is validated against a safe charset; repository references that contain anything unusual are rejected at parse time.
 - **No surprise network.** Server requests go only to `api.github.com`, `github.com`, and `codeload.github.com` over https.
 - **Atomic manifest writes.** The profile manifest is written temp-file-then-rename.
@@ -136,7 +160,7 @@ pnpm dsh web --patch D:/path/to/deep-plugin-manager/cordis.patch.yml --no-open
 
 ## Contributing
 
-Issues and pull requests are welcome. Good first contributions: batch update checks, an update-available indicator on boot, and per-plugin GitHub metadata (stars, description) in the list.
+Issues and pull requests are welcome. Good first contributions: batch update checks, an update-available indicator on boot, and a deeper `pnpm-lock.yaml` parse (shared and workspace-package resolution, which the current reader deliberately ignores).
 
 ## License
 
