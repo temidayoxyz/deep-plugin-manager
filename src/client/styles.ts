@@ -93,6 +93,25 @@ export const SECTION_STYLES = `
   flex-direction: column;
   gap: 10px;
 }
+.dpm-self {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  padding: 12px 14px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+}
+.dpm-verdict {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-state-success-primary);
+  margin-top: 2px;
+}
+.dpm-verdict.muted {
+  color: var(--dsw-alias-label-tertiary);
+}
 .dpm-row {
   display: flex;
   align-items: center;

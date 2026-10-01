@@ -8,14 +8,14 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import {
-  ApiError, checkUpdate, disablePlugin, enablePlugin, installPlugin, listPlugins,
-  uninstallPlugin, updatePlugin,
-  type PluginEntry, type UpdateCheck,
+  ApiError, checkUpdate, disablePlugin, enablePlugin, fetchSelf, installPlugin, listPlugins,
+  uninstallPlugin, updatePlugin, updateSelf,
+  type PluginEntry, type SelfInfo, type UpdateCheck,
 } from './api.ts'
 import type { LocaleSeat } from './harness-types.ts'
 
 /** Which operation is running; at most one at a time. */
-export type Busy = 'install'
+export type Busy = 'install' | 'self-update' | 'self-check'
   | `enable:${string}` | `disable:${string}` | `uninstall:${string}`
   | `update:${string}` | `check:${string}`
 
@@ -26,8 +26,30 @@ export interface Banner {
   detail?: string
 }
 
-/** Update-check outcome per plugin name (undefined until checked). */
-export type UpdateState = Record<string, UpdateCheck | 'none' | 'error'>
+/**
+ * Update-check outcome per plugin name (undefined until checked).
+ *
+ * A completed check is stored as the verdict itself, so the UI can tell
+ * 'checked and up to date' from 'not checked yet' — which is what decides
+ * whether the Update button is offered at all.
+ */
+export type UpdateState = Record<string, UpdateCheck | 'error'>
+
+/** One row's or the manager's own check state. */
+export type RowState = UpdateCheck | 'error' | undefined
+
+/**
+ * Whether the Update button should be offered.
+ *
+ * A check that came back up to date must leave no button: clicking Update then
+ * would run pnpm for a package already at the latest version. Exported so the
+ * rule is asserted directly in tests/update-ui.spec.ts.
+ * @param update - the row's stored check result, if any.
+ * @returns whether Update should be shown.
+ */
+export function updateAvailable(update: RowState): boolean {
+  return update !== undefined && update !== 'error' && update.updateAvailable
+}
 
 /** Full component props: the locale seat. */
 export interface PluginManagerSectionProps {
@@ -41,6 +63,8 @@ export interface PluginManagerSectionProps {
  */
 export function PluginManagerSection({ t }: PluginManagerSectionProps) {
   const [plugins, setPlugins] = useState<PluginEntry[] | undefined>(undefined)
+  const [self, setSelf] = useState<SelfInfo | undefined>(undefined)
+  const [selfCheck, setSelfCheck] = useState<UpdateCheck | 'error' | undefined>(undefined)
   const [busy, setBusy] = useState<Busy | null>(null)
   const [banner, setBanner] = useState<Banner | null>(null)
   const [input, setInput] = useState('')
@@ -51,12 +75,15 @@ export function PluginManagerSection({ t }: PluginManagerSectionProps) {
   const refresh = useCallback(async (): Promise<void> => {
     const { plugins: entries } = await listPlugins()
     setPlugins(entries)
+    const { self: info } = await fetchSelf()
+    setSelf(info)
   }, [])
 
   useEffect(() => {
     refresh().catch((error: unknown) => {
       setBanner(errorBanner(t, error))
       setPlugins([])
+      setSelf(undefined)
     })
   }, [refresh, t])
 
@@ -109,11 +136,12 @@ export function PluginManagerSection({ t }: PluginManagerSectionProps) {
     setBanner(null)
   }, [confirming, run, t])
 
+  /** Run one check and store its verdict; a failure stores 'error'. */
   const doCheck = useCallback(async (name: string) => {
     setBusy(`check:${name}`)
     try {
       const check: UpdateCheck = await checkUpdate(name)
-      setUpdates((previous) => ({ ...previous, [name]: check.latest === null ? 'none' : check }))
+      setUpdates((previous) => ({ ...previous, [name]: check }))
     } catch (error) {
       setUpdates((previous) => ({ ...previous, [name]: 'error' }))
       setBanner(errorBanner(t, error))
@@ -122,10 +150,44 @@ export function PluginManagerSection({ t }: PluginManagerSectionProps) {
     }
   }, [t])
 
+  /**
+   * Update one plugin, then clear its check result.
+   *
+   * The stored verdict describes the version that was checked, so keeping it
+   * after an update would leave the row claiming an update is still available
+   * for the version just replaced. Clearing returns the row to 'not checked',
+   * and the user checks again to see where they now stand.
+   */
   const doUpdate = useCallback(async (name: string) => {
     await run(`update:${name}` as Busy, async () => {
       const { result } = await updatePlugin(name)
+      setUpdates((previous) => {
+        const next = { ...previous }
+        delete next[name]
+        return next
+      })
       return t('update.done', { name, version: result.version })
+    })
+  }, [run, t])
+
+  const doSelfCheck = useCallback(async () => {
+    setBusy('self-check')
+    try {
+      const check: UpdateCheck = await checkUpdate(self?.name ?? '')
+      setSelfCheck(check)
+    } catch (error) {
+      setSelfCheck('error')
+      setBanner(errorBanner(t, error))
+    } finally {
+      setBusy(null)
+    }
+  }, [self, t])
+
+  const doSelfUpdate = useCallback(async () => {
+    await run('self-update', async () => {
+      const { result } = await updateSelf()
+      setSelfCheck(undefined)
+      return t('update.done', { name: result.name, version: result.version })
     })
   }, [run, t])
 
@@ -134,6 +196,17 @@ export function PluginManagerSection({ t }: PluginManagerSectionProps) {
       <h2 className='dpm-heading'>{t('title')}</h2>
       <p className='dpm-intro'>{t('intro')}</p>
       <p className='dpm-note'>{t('restart.note')}</p>
+
+      {self !== undefined && (
+        <SelfCard
+          self={self}
+          check={selfCheck}
+          busy={busy}
+          t={t}
+          onCheck={() => { void doSelfCheck() }}
+          onUpdate={() => { void doSelfUpdate() }}
+        />
+      )}
 
       <div className='dpm-install'>
         <input
@@ -199,6 +272,79 @@ export function PluginManagerSection({ t }: PluginManagerSectionProps) {
   )
 }
 
+/**
+ * The manager's own update card.
+ *
+ * The spec the profile records is the source the check runs from, so nothing
+ * has to be typed: the button asks GitHub about the repository the manager was
+ * already installed from. Update is offered only after a check has actually
+ * found something, and disappears again once the update lands.
+ */
+function SelfCard({
+  self, check, busy, t, onCheck, onUpdate,
+}: {
+  self: SelfInfo
+  check: RowState
+  busy: Busy | null
+  t: LocaleSeat['t']
+  onCheck(): void
+  onUpdate(): void
+}) {
+  const short = (sha: string): string => sha.slice(0, 7)
+  const done = check !== undefined && check !== 'error' ? check : null
+  const verdict = done === null ? null : checkStatusText(done, t, short)
+  const canUpdate = updateAvailable(check)
+  return (
+    <div className='dpm-self'>
+      <div className='dpm-main'>
+        <div>
+          <span className='dpm-name'>{t('self.title')}</span>
+          {self.version !== '' && <span className='dpm-version'>{self.version}</span>}
+          {canUpdate && done !== null && (
+            <span className='dpm-badge'>
+              {done.basis === 'commit'
+                ? t('update.commitAvailable', { sha: short(done.head?.sha ?? '') })
+                : t('update.available', { tag: done.latest?.tag ?? '' })}
+            </span>
+          )}
+        </div>
+        <div className='dpm-desc'>{t('self.intro')}</div>
+        {verdict !== null && <div className='dpm-verdict'>{verdict}</div>}
+        {!self.updatable && self.reason !== undefined && (
+          <div className='dpm-verdict muted'>{self.reason}</div>
+        )}
+      </div>
+      <div className='dpm-actions'>
+        <button type='button' className='dpm-button quiet' onClick={onCheck} disabled={busy !== null}>
+          {busy === 'self-check'
+            ? t('action.checking')
+            : check === undefined ? t('action.check') : t('self.recheck')}
+        </button>
+        {canUpdate && (
+          <button type='button' className='dpm-button' onClick={onUpdate} disabled={busy !== null}>
+            {busy === 'self-update' ? t('action.working') : t('action.update')}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** One line describing what a completed check found. */
+function checkStatusText(check: UpdateCheck, t: LocaleSeat['t'], short: (sha: string) => string): string {
+  if (!check.comparable) return t('update.commitUnknown')
+  if (check.basis === 'commit') {
+    if (check.head === undefined) return t('update.headUnknown')
+    return check.updateAvailable
+      ? t('update.commitAvailable', { sha: short(check.head.sha) })
+      : t('update.commitUptodate')
+  }
+  if (check.latest === null) return t('update.headUnknown')
+  return check.updateAvailable
+    ? t('update.available', { tag: check.latest.tag })
+    : t('update.uptodate')
+}
+
 /** One installed-plugin row: identity, state toggle, and lifecycle actions. */
 function PluginRow({
   entry, busy, confirming, update, t, onToggle, onUninstall, onCheck, onUpdate,
@@ -206,7 +352,7 @@ function PluginRow({
   entry: PluginEntry
   busy: Busy | null
   confirming: boolean
-  update: UpdateCheck | 'none' | 'error' | undefined
+  update: RowState
   t: LocaleSeat['t']
   onToggle(): void
   onUninstall(): void
@@ -214,15 +360,27 @@ function PluginRow({
   onUpdate(): void
 }) {
   const rowBusy = (key: string): boolean => busy === key
-  const updateAvailable = update !== undefined && update !== 'none' && update !== 'error' && update.updateAvailable
+  const done = update !== undefined && update !== 'error' ? update : null
+  const canUpdate = updateAvailable(update)
   return (
     <div className='dpm-row'>
       <div className='dpm-main'>
         <div>
           <span className='dpm-name'>{entry.displayName ?? entry.name}</span>
           {entry.version !== '' && <span className='dpm-version'>{entry.version}</span>}
-          {updateAvailable && <span className='dpm-badge'>{t('update.available', { tag: (update as UpdateCheck).latest?.tag ?? '' })}</span>}
+          {canUpdate && done !== null && (
+            <span className='dpm-badge'>
+              {done.basis === 'commit'
+                ? t('update.commitAvailable', { sha: (done.head?.sha ?? '').slice(0, 7) })
+                : t('update.available', { tag: done.latest?.tag ?? '' })}
+            </span>
+          )}
         </div>
+        {done !== null && (
+          <div className='dpm-verdict'>
+            {checkStatusText(done, t, (sha) => sha.slice(0, 7))}
+          </div>
+        )}
         <div className='dpm-spec' title={entry.spec}>
           {t('managed.by', { spec: entry.spec })}
           {entry.displayName !== undefined && entry.displayName !== entry.name && (
@@ -257,13 +415,15 @@ function PluginRow({
         >
           {rowBusy(`check:${entry.name}`) ? t('action.checking') : t('action.check')}
         </button>
-        {update !== undefined && update !== 'error' && (
+        {/* Offered only once a check has found something newer. A check that
+            came back up to date must not leave a button that would run pnpm
+            for a package already at the latest version. */}
+        {canUpdate && (
           <button
             type='button'
             className='dpm-button quiet'
             onClick={onUpdate}
             disabled={busy !== null}
-            title={update === 'none' ? t('update.none') : undefined}
           >
             {rowBusy(`update:${entry.name}`) ? t('action.working') : t('action.update')}
           </button>

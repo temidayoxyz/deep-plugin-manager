@@ -51,6 +51,31 @@ export interface UpdateResult {
   restartRequired: true
 }
 
+/** What the manager reports about itself. */
+export interface SelfInfo {
+  name: string
+  version: string
+  spec: string
+  /** Source repository as owner/repo, when installed from GitHub. */
+  repo?: string
+  patchMounted: boolean
+  enabled: boolean
+  /** False only for a local checkout or a patch-mounted install. */
+  updatable: boolean
+  /** Why self-update is refused, when it is. */
+  reason?: string
+}
+
+/** Read the manager's own install state. */
+export function fetchSelf(): Promise<{ self: SelfInfo }> {
+  return call('/deep-plugin-manager/self')
+}
+
+/** Update the manager itself from its GitHub repository. */
+export function updateSelf(): Promise<{ result: UpdateResult }> {
+  return call('/deep-plugin-manager/self-update', { method: 'POST' })
+}
+
 /** One failed management call, with the tool output when present. */
 export class ApiError extends Error {
   readonly kind: string
