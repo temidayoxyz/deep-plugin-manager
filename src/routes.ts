@@ -37,6 +37,9 @@ export function createApi(options: PluginManagerOptions): PluginManagerApi {
   return createPluginManager(options)
 }
 
+/** The route prefix every management endpoint lives under. */
+export const ROUTE_PREFIX = '/deep-plugin-manager'
+
 /**
  * Dispatch one request to the API. The prefix route hands every path here;
  * matching is by method + exact suffix.
@@ -103,7 +106,15 @@ export async function handleRequest(
       sendJson(res, 200, await api.checkUpdate(name))
       return
     }
-    sendJson(res, 404, { error: { kind: 'not-found', message: `No management route for ${method} ${path}.` } })
+    // An unknown route under our own prefix is nearly always a stale process:
+    // the host half is loaded into memory at Harness start, so after a
+    // self-update the new browser bundle calls routes this process has never
+    // heard of. Say so, instead of reporting a bare 404 the user cannot act on.
+    const kind = path.startsWith(`${ROUTE_PREFIX}/`) ? 'stale-host' : 'not-found'
+    const message = kind === 'stale-host'
+      ? 'The Harness is running an older version of the Plugin Manager than this page. Restart the Harness to load the current one.'
+      : `No management route for ${method} ${path}.`
+    sendJson(res, 404, { error: { kind, message } })
   } catch (error) {
     if (error instanceof ManagerError) {
       sendJson(res, error.status, {

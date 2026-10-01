@@ -90,6 +90,20 @@ so a package update would not take effect).
 
 As with every other change here, the new code loads at the next Harness start.
 
+### After updating the manager: restart once
+
+The host half of this plugin is loaded into memory when the Harness starts, so
+a self-update replaces the files on disk without changing the running process.
+The browser half is served fresh from disk, so the page may load the new
+interface while the process behind it still answers with the old routes. That
+combination reports:
+
+> The Harness is running an older version of the Plugin Manager than this page.
+> Restart the Harness to load the current one.
+
+That message means a restart, not a bug. Restarting once after the first
+self-update resolves it; after that, the page and the process are in step.
+
 Accepted repository references:
 
 ```

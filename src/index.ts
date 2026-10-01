@@ -9,15 +9,15 @@
  * @module dsh-deep-plugin-manager
  */
 import type { ClientContextLike } from './harness-types.ts'
-import { createApi, handleRequest } from './routes.ts'
+import { createApi, handleRequest, ROUTE_PREFIX } from './routes.ts'
 import { createPnpmRunner } from './runner.ts'
 import { resolveProfileDir } from './profile.ts'
 
 /** Required services: the Harness home (profile lookup) and the web server. */
 export const inject = ['dshHomePath', 'webServer']
 
-/** The route prefix every management endpoint lives under. */
-export const ROUTE_PREFIX = '/deep-plugin-manager'
+/** The route prefix every management endpoint lives under (from ./routes.ts). */
+export { ROUTE_PREFIX }
 
 /** Plugin configuration. */
 export interface Config {
