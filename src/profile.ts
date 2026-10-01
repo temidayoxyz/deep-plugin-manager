@@ -15,6 +15,12 @@ import { ManagerError, NotInstalledError, ReservedNameError } from './errors.ts'
 /** Packages the Harness owns; the manager refuses to touch them. */
 const RESERVED_PREFIXES = ['@deepseek-ai/']
 
+/** This manager's own package name. */
+export const SELF_NAME = 'dsh-deep-plugin-manager'
+
+/** A 40-character git SHA, as pnpm records one in a lockfile tarball URL. */
+const COMMIT_SHA = /\b([0-9a-f]{40})\b/
+
 /** The `dsh.profile` slice of the profile manifest. */
 export interface ProfileManifest {
   name?: string
@@ -237,6 +243,97 @@ export function readInstalledPackage(
     version: typeof installed.version === 'string' ? installed.version : '',
     bundlePatch: typeof installed.dsh?.bundle?.patch === 'string' ? installed.dsh.bundle.patch : undefined,
   }
+}
+
+/** Leading indentation width of one YAML line, used for block scoping. */
+function indentOf(line: string): number {
+  return line.length - line.trimStart().length
+}
+
+/**
+ * Read the commit pnpm actually installed for one GitHub dependency.
+ *
+ * pnpm resolves a `github:` spec to a codeload tarball URL whose last path
+ * segment is the exact commit, and records it in `pnpm-lock.yaml` under the
+ * root importer:
+ *
+ * ```yaml
+ * dsh-deep-plugin-manager:
+ *   specifier: github:temidayoxyz/deep-plugin-manager
+ *   version: https://codeload.github.com/owner/repo/tar.gz/<sha>
+ * ```
+ *
+ * That recorded SHA is the authoritative answer to "which commit is installed",
+ * so a release-less repository can still be compared against its branch head.
+ * The lockfile is pnpm's own file rather than the profile manifest, so the read
+ * is deliberately forgiving: the root importer block is located by indentation,
+ * the dependency's own two lines are read, and anything unrecognized yields
+ * `undefined` ("cannot compare") instead of a guess.
+ *
+ * @param profileDir - the profile directory.
+ * @param name - dependency name (the package name, which is the lockfile key).
+ * @returns the installed commit SHA, or undefined when it cannot be determined.
+ */
+export function installedCommit(profileDir: string, name: string): string | undefined {
+  const lockPath = join(profileDir, 'pnpm-lock.yaml')
+  if (!existsSync(lockPath)) return undefined
+  let lines: string[]
+  try {
+    lines = readFileSync(lockPath, 'utf8').split(/\r?\n/)
+  } catch {
+    return undefined
+  }
+
+  // Scope to the root importer (`  .:`), the one that holds the profile's own
+  // dependencies; a workspace member's block must not answer for the profile.
+  const importersAt = lines.findIndex((line) => line.trimEnd() === 'importers:')
+  if (importersAt === -1) return undefined
+  let rootAt = -1
+  let rootIndent = 0
+  for (let index = importersAt + 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    if (line.trim() === '') continue
+    const indent = indentOf(line)
+    if (line.trimEnd().startsWith('importers:')) break
+    // The root importer is the `.:` key at the shallowest indent under
+    // `importers:`; stop once a shallower line appears.
+    if (rootAt === -1) {
+      if (line.trim() === '.:' || line.trim() === "'.':") {
+        rootAt = index
+        rootIndent = indent
+      }
+      continue
+    }
+    if (indent <= rootIndent) break
+  }
+  if (rootAt === -1) return undefined
+
+  // Within the root block, find this dependency's `specifier`/`version` pair.
+  const quotedName = `'${name}'`
+  for (let index = rootAt + 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    if (line.trim() === '') continue
+    if (indentOf(line) <= rootIndent) break
+    if (line.trim() !== `${name}:` && line.trim() !== `${quotedName}:`) continue
+    let specifier = ''
+    let version = ''
+    for (let inner = index + 1; inner < lines.length; inner += 1) {
+      const innerLine = lines[inner] ?? ''
+      if (innerLine.trim() === '') continue
+      if (indentOf(innerLine) <= indentOf(line)) break
+      const specifierMatch = /^specifier:\s*(.+)$/.exec(innerLine.trim())
+      if (specifierMatch?.[1] !== undefined) specifier = specifierMatch[1].trim()
+      const versionMatch = /^version:\s*(.+)$/.exec(innerLine.trim())
+      if (versionMatch?.[1] !== undefined) {
+        version = versionMatch[1].trim().replaceAll("'", '')
+        break
+      }
+    }
+    if (specifier === '' || !specifier.startsWith('github:')) return undefined
+    const sha = COMMIT_SHA.exec(version)?.[1]
+    return sha
+  }
+  return undefined
 }
 
 /**

@@ -225,6 +225,75 @@ export async function latestRelease(ref: RepoRef): Promise<ReleaseInfo | null> {
   }
 }
 
+/** One commit as the manager surfaces it. */
+export interface HeadInfo {
+  /** Full commit SHA. */
+  sha: string
+  /** First line of the commit message, when GitHub returned one. */
+  message: string
+  /** Commit URL. */
+  url: string
+  /** ISO timestamp of the commit, or '' when GitHub omitted it. */
+  date: string
+}
+
+/**
+ * Fetch the newest commit on a branch: the repository's default branch when no
+ * ref is pinned, otherwise the pinned branch or tag.
+ *
+ * This is the update signal for repositories that publish no releases, where
+ * {@link latestRelease} returns `null` and version comparison says nothing. The
+ * default branch is resolved by asking for `HEAD` rather than by a second
+ * metadata call, so a check stays at one request.
+ *
+ * @param ref - repository reference; `ref.ref` selects the branch or tag.
+ * @returns the head commit, or `null` when the repository or ref is unknown.
+ * @throws {GitHubError} on network failure, rate limit, or non-OK responses.
+ */
+export async function branchHead(ref: RepoRef): Promise<HeadInfo | null> {
+  const target = ref.ref === undefined ? 'HEAD' : encodeURIComponent(ref.ref)
+  const url = ['https://api.github.com/repos', ref.owner, ref.repo, 'commits', target].join('/')
+  assertAllowedUrl(url)
+  let response: Response
+  try {
+    response = await fetch(url, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        'user-agent': 'dsh-deep-plugin-manager',
+        ...authHeader(),
+      },
+    })
+  } catch (error) {
+    throw new GitHubError(`GitHub request failed: ${String(error)}`, String(error))
+  }
+  if (response.status === 404) return null
+  if (response.status === 403 || response.status === 429) {
+    throw new GitHubError(
+      'GitHub rate limit reached. Try again later, or set GITHUB_TOKEN to raise the limit.',
+    )
+  }
+  if (!response.ok) {
+    throw new GitHubError(`GitHub responded ${String(response.status)} for ${ref.owner}/${ref.repo}.`)
+  }
+  const body = await response.json().catch(() => null) as {
+    sha?: unknown
+    html_url?: unknown
+    commit?: { message?: unknown; committer?: { date?: unknown } }
+  } | null
+  if (body === null || typeof body.sha !== 'string') {
+    throw new GitHubError('GitHub returned an unreadable commit payload.')
+  }
+  const message = typeof body.commit?.message === 'string' ? body.commit.message.split('\n')[0]?.trim() ?? '' : ''
+  return {
+    sha: body.sha,
+    message,
+    url: typeof body.html_url === 'string'
+      ? body.html_url
+      : `https://github.com/${ref.owner}/${ref.repo}/commit/${body.sha}`,
+    date: typeof body.commit?.committer?.date === 'string' ? body.commit.committer.date : '',
+  }
+}
+
 /**
  * Fetch the repository's own metadata (the About description).
  * @param ref - repository reference (the ref field is ignored here).
